@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Debug Firebase</title>
+<style>
+  body { font-family: monospace; background:#111; color:#0f0; padding:16px; font-size:12px; }
+  .ok { color:#0f0; } .err { color:#f44; } .info { color:#ff0; }
+  pre { background:#222; padding:10px; border-radius:6px; overflow-x:auto; white-space:pre-wrap; }
+  button { background:#0f0; color:#000; border:none; padding:8px 16px; margin:4px; border-radius:4px; font-size:13px; cursor:pointer; }
+</style>
+</head>
+<body>
+<h3>🔍 Firebase Debug Tool</h3>
+<div id="log"></div>
+<button onclick="runDebug()">▶ Run Debug</button>
+<button onclick="document.getElementById('log').innerHTML=''">Clear</button>
+
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+import { getFirestore, collection, getDocs } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyBwK90APc4xFmX7sOS8WoLyRDjIVThimqQ",
+  authDomain: "lalo-ytd.firebaseapp.com",
+  projectId: "lalo-ytd",
+  storageBucket: "lalo-ytd.firebasestorage.app",
+  messagingSenderId: "842696950491",
+  appId: "1:842696950491:web:fd500db5cc5d2ed85182fe"
+};
+
+const app = initializeApp(firebaseConfig);
+const db = getFirestore(app);
+
+function log(msg, type='ok') {
+  const el = document.getElementById('log');
+  el.innerHTML += `<div class="${type}">${msg}</div>`;
+}
+
+window.runDebug = async function() {
+  document.getElementById('log').innerHTML = '';
+  log('=== START DEBUG ===', 'info');
+
+  try {
+    // 1. Test sales_data
+    log('📂 Reading sales_data...', 'info');
+    const sdSnap = await getDocs(collection(db, 'sales_data'));
+    log(`Found ${sdSnap.size} docs in sales_data`);
+    
+    for (const doc of sdSnap.docs) {
+      const data = doc.data();
+      log(`\n📄 Doc: ${doc.id}`, 'info');
+      log(`   Fields: ${Object.keys(data).join(', ')}`);
+      
+      // Check months fields
+      const m25 = data._months_25 || data.months25 || data.months_25 || null;
+      const m26 = data._months_26 || data.months26 || data.months_26 || null;
+      log(`   _months_25: ${JSON.stringify(m25)}`);
+      log(`   _months_26: ${JSON.stringify(m26)}`);
+      
+      // Read chunks
+      log(`   Reading chunks...`, 'info');
+      const chunksSnap = await getDocs(collection(db, 'sales_data', doc.id, 'chunks'));
+      log(`   Found ${chunksSnap.size} chunks: ${chunksSnap.docs.map(d=>d.id).join(', ')}`);
+      
+      for (const chunk of chunksSnap.docs) {
+        const cdata = chunk.data();
+        const keys = Object.keys(cdata);
+        log(`\n   📦 Chunk: ${chunk.id}`, 'info');
+        log(`      Top-level keys (${keys.length}): ${keys.slice(0,5).join(', ')}${keys.length>5?'...':''}`);
+        
+        // Show first item detail
+        const firstKey = keys.find(k => !k.startsWith('_'));
+        if (firstKey) {
+          const firstVal = cdata[firstKey];
+          log(`      First item key: "${firstKey}"`);
+          log(`      First item value:`);
+          log(`<pre>${JSON.stringify(firstVal, null, 2).slice(0, 500)}</pre>`);
+        }
+      }
+    }
+
+    // 2. Test sales_base
+    log('\n📂 Reading sales_base...', 'info');
+    const sbSnap = await getDocs(collection(db, 'sales_base'));
+    log(`Found ${sbSnap.size} docs in sales_base`);
+    
+    for (const doc of sbSnap.docs) {
+      const data = doc.data();
+      log(`\n📄 Doc: ${doc.id}`, 'info');
+      log(`   Fields: ${Object.keys(data).join(', ')}`);
+      
+      const chunksSnap = await getDocs(collection(db, 'sales_base', doc.id, 'chunks'));
+      log(`   Chunks: ${chunksSnap.docs.map(d=>d.id).join(', ')}`);
+      
+      for (const chunk of chunksSnap.docs) {
+        const cdata = chunk.data();
+        const keys = Object.keys(cdata);
+        log(`\n   📦 Chunk ${chunk.id}: ${keys.length} keys`);
+        const firstKey = keys.find(k => !k.startsWith('_') && k !== 'months' && k !== 'nchunks');
+        if (firstKey) {
+          log(`      Sample: "${firstKey}"`);
+          log(`<pre>${JSON.stringify(cdata[firstKey], null, 2).slice(0, 400)}</pre>`);
+        }
+      }
+    }
+
+    log('\n=== DEBUG COMPLETE ===', 'info');
+    
+  } catch(err) {
+    log(`ERROR: ${err.message}`, 'err');
+    log(err.stack, 'err');
+  }
+}
+</script>
+</body>
+</html>
