@@ -763,148 +763,134 @@ window.chatHistory = [];
 const BULAN = ['','Jan','Feb','Mar','Apr','Mei','Jun','Jul','Agu','Sep','Okt','Nov','Des'];
 
 // ============ LOAD DATA ============
-// Struktur Firebase AKTUAL:
-// sales_data/{period}/chunks/o25_0 = { outletName: { monthly: { "1":{qty,val}, "2":{qty,val} } } }
-// sales_data/{period}/chunks/o26_0 = outlet 2026 (sama)
-// sales_data/{period}/chunks/p25_0 = { produkName: { monthly: { "1":{qty,val} } } }
-// sales_data/{period}/chunks/p26_0 = produk 2026 (sama)
-// sales_base/{year}/chunks/c0,c1,c2 = mungkin sama
-
-// Parse monthly data dari satu item (outlet/produk)
-function parseMonthly(itemData, filterMonths) {
-  // itemData = { monthly: { "1": {qty,val}, "2": {qty,val} } }
-  const monthly = itemData.monthly || {};
-  let totalQty = 0, totalVal = 0;
-  const byMonth = {};
-  Object.entries(monthly).forEach(([mStr, mv]) => {
-    const m = parseInt(mStr);
-    const q = parseInt(mv.qty) || 0;
-    const v = parseInt(mv.val) || 0;
-    byMonth[m] = { qty: q, val: v };
-    if (!filterMonths || filterMonths.length === 0 || filterMonths.includes(m)) {
-      totalQty += q;
-      totalVal += v;
-    }
-  });
-  return { totalQty, totalVal, byMonth };
-}
-
-// Read outlet chunks (o25_0, o26_0, etc)
-async function readOutletChunks(colPath, year, filterMonths) {
-  const result = {}; // { outletName: { produkName: {qty, val} } }
-  const chunksSnap = await getDocs(collection(db, ...colPath.split('/')));
-  chunksSnap.forEach(chunkDoc => {
-    const docId = chunkDoc.id; // o25_0, o26_0, p25_0, p26_0
-    const chunkYear = docId.includes('25') ? 2025 : docId.includes('26') ? 2026 : null;
-    if (!docId.startsWith('o')) return; // only outlet chunks
-    if (year && chunkYear && chunkYear !== year) return;
-
-    const data = chunkDoc.data();
-    Object.entries(data).forEach(([outletName, outletData]) => {
-      if (['_label','_months_25','_months_26','_saved','nchunks'].includes(outletName)) return;
-      if (outletName.startsWith('_')) return;
-      if (typeof outletData !== 'object' || outletData === null || Array.isArray(outletData)) return;
-
-      if (!result[outletName]) result[outletName] = {};
-
-      // outletData = { monthly: {...}, products: { produkName: { monthly: {...} } } }
-      const products = outletData.products || {};
-      Object.entries(products).forEach(([produk, produkData]) => {
-        if (typeof produkData !== 'object') return;
-        const { totalQty, totalVal } = parseMonthly(produkData, filterMonths);
-        if (!result[outletName][produk]) result[outletName][produk] = { qty: 0, val: 0 };
-        result[outletName][produk].qty += totalQty;
-        result[outletName][produk].val += totalVal;
-      });
-
-      // Fallback: jika tidak ada products, cek monthly langsung di outletData
-      if (Object.keys(products).length === 0 && outletData.monthly) {
-        const { totalQty, totalVal } = parseMonthly(outletData, filterMonths);
-        if (!result[outletName]['_total']) result[outletName]['_total'] = { qty: 0, val: 0 };
-        result[outletName]['_total'].qty += totalQty;
-        result[outletName]['_total'].val += totalVal;
-      }
-    });
-  });
-  return result;
-}
-
-// Read produk chunks (p25_0, p26_0)
-async function readProdukChunks(colPath, year, filterMonths) {
-  const result = {}; // { produkName: { qty, val } }
-  const chunksSnap = await getDocs(collection(db, ...colPath.split('/')));
-  chunksSnap.forEach(chunkDoc => {
-    const docId = chunkDoc.id;
-    const chunkYear = docId.includes('25') ? 2025 : docId.includes('26') ? 2026 : null;
-    if (!docId.startsWith('p')) return;
-    if (year && chunkYear && chunkYear !== year) return;
-
-    const data = chunkDoc.data();
-    Object.entries(data).forEach(([produkName, produkData]) => {
-      if (produkName.startsWith('_')) return;
-      if (typeof produkData !== 'object' || produkData === null || Array.isArray(produkData)) return;
-      const { totalQty, totalVal } = parseMonthly(produkData, filterMonths);
-      if (!result[produkName]) result[produkName] = { qty: 0, val: 0 };
-      result[produkName].qty += totalQty;
-      result[produkName].val += totalVal;
-    });
-  });
-  return result;
-}
+// FORMAT sales_data chunks (o25_0, o26_0):
+// { outletName: { monthly:{m:{qty,val}}, qty_total, val_total, products:{produkName:{qty,val,monthly}} } }
+// FORMAT sales_base chunks (c0,c1,c2):
+// { outletName: { produkName: { qty, val } } }
 
 async function loadData() {
   try {
     setStatus('Memuat...', 'yellow');
 
-    // === LOAD sales_data (main collection) ===
-    const dataPeriodsSnap = await getDocs(collection(db, 'sales_data'));
-    for (const periodDoc of dataPeriodsSnap.docs) {
-      const periodId = periodDoc.id;
-      const periodMeta = periodDoc.data();
-      const months25 = (periodMeta._months_25 || periodMeta.months25 || []).map(Number);
-      const months26 = (periodMeta._months_26 || periodMeta.months26 || []).map(Number);
-      const chunksPath = `sales_data/${periodId}/chunks`;
+    // === LOAD sales_data (format baru dengan monthly) ===
+    const sdSnap = await getDocs(collection(db, 'sales_data'));
+    for (const periodDoc of sdSnap.docs) {
+      const meta = periodDoc.data();
+      const months25 = (meta._months_25 || []).map(Number);
+      const months26 = (meta._months_26 || []).map(Number);
+      const chunksSnap = await getDocs(collection(db, 'sales_data', periodDoc.id, 'chunks'));
 
-      // 2025 data
-      if (months25.length > 0) {
-        const label25 = `YTD 2025`;
-        const outletData = await readOutletChunks(chunksPath, 2025, months25);
-        const produkData = await readProdukChunks(chunksPath, 2025, months25);
-        window.salesData[label25] = outletData;
-        window.produkData[label25] = produkData;
-        window.yearMeta[label25] = { months: months25, year: 2025 };
+      // Process each chunk
+      const outletAgg25 = {}, outletAgg26 = {};
+      const produkAgg25 = {}, produkAgg26 = {};
+
+      chunksSnap.forEach(chunkDoc => {
+        const cid = chunkDoc.id; // o25_0, o26_0, p25_0, p26_0
+        const isOutlet = cid.startsWith('o');
+        const isProduk = cid.startsWith('p');
+        const is25 = cid.includes('25');
+        const is26 = cid.includes('26');
+        const data = chunkDoc.data();
+
+        if (isOutlet) {
+          const target = is25 ? outletAgg25 : outletAgg26;
+          Object.entries(data).forEach(([outletName, outletData]) => {
+            if (outletName.startsWith('_') || typeof outletData !== 'object' || Array.isArray(outletData)) return;
+            if (!target[outletName]) target[outletName] = {};
+            // products = { produkName: { qty, val, monthly } }
+            const products = outletData.products || {};
+            Object.entries(products).forEach(([produk, pdata]) => {
+              if (typeof pdata !== 'object') return;
+              const qty = parseInt(pdata.qty) || 0;
+              const val = parseInt(pdata.val) || 0;
+              if (!target[outletName][produk]) target[outletName][produk] = { qty: 0, val: 0 };
+              target[outletName][produk].qty += qty;
+              target[outletName][produk].val += val;
+            });
+            // Fallback: use qty_total/val_total if no products
+            if (Object.keys(products).length === 0) {
+              const qty = parseInt(outletData.qty_total) || 0;
+              const val = parseInt(outletData.val_total) || 0;
+              if (qty > 0 || val > 0) {
+                target[outletName]['_total'] = { qty, val };
+              }
+            }
+          });
+        }
+
+        if (isProduk) {
+          const target = is25 ? produkAgg25 : produkAgg26;
+          Object.entries(data).forEach(([produkName, produkData]) => {
+            if (produkName.startsWith('_') || typeof produkData !== 'object' || Array.isArray(produkData)) return;
+            const qty = parseInt(produkData.qty) || 0;
+            const val = parseInt(produkData.val) || 0;
+            if (!target[produkName]) target[produkName] = { qty: 0, val: 0 };
+            target[produkName].qty += qty;
+            target[produkName].val += val;
+          });
+        }
+      });
+
+      // Save 2025 data
+      if (months25.length > 0 && Object.keys(outletAgg25).length > 0) {
+        const label = 'YTD 2025';
+        window.salesData[label] = outletAgg25;
+        window.produkData[label] = produkAgg25;
+        window.yearMeta[label] = { months: months25, year: 2025 };
       }
 
-      // 2026 data
-      if (months26.length > 0) {
-        const lastM = BULAN[months26[months26.length-1]] || months26[months26.length-1];
-        const label26 = `YTD 2026 s/d ${lastM}`;
-        const outletData = await readOutletChunks(chunksPath, 2026, months26);
-        const produkData = await readProdukChunks(chunksPath, 2026, months26);
-        window.salesData[label26] = outletData;
-        window.produkData[label26] = produkData;
-        window.yearMeta[label26] = { months: months26, year: 2026 };
+      // Save 2026 data
+      if (months26.length > 0 && Object.keys(outletAgg26).length > 0) {
+        const lastM = BULAN[months26[months26.length - 1]] || months26[months26.length - 1];
+        const label = `YTD 2026 s/d ${lastM}`;
+        window.salesData[label] = outletAgg26;
+        window.produkData[label] = produkAgg26;
+        window.yearMeta[label] = { months: months26, year: 2026 };
       }
     }
 
-    // === LOAD sales_base (2025 backup) ===
-    const baseSnap = await getDocs(collection(db, 'sales_base'));
-    for (const yearDoc of baseSnap.docs) {
+    // === LOAD sales_base (format lama: outletName > produkName > {qty,val}) ===
+    const sbSnap = await getDocs(collection(db, 'sales_base'));
+    for (const yearDoc of sbSnap.docs) {
       const year = parseInt(yearDoc.id);
-      const yearMeta = yearDoc.data();
-      const months = (yearMeta.months || []).map(Number);
+      const ymeta = yearDoc.data();
+      const months = (ymeta.months || []).map(Number);
       const label = `YTD ${year}`;
-      if (!window.salesData[label]) {
-        const chunksPath = `sales_base/${yearDoc.id}/chunks`;
-        const outletData = await readOutletChunks(chunksPath, year, months);
-        const produkData = await readProdukChunks(chunksPath, year, months);
-        window.salesData[label] = outletData;
-        window.produkData[label] = produkData;
+      if (window.salesData[label]) continue; // sudah ada dari sales_data
+
+      const chunksSnap = await getDocs(collection(db, 'sales_base', yearDoc.id, 'chunks'));
+      const outletAgg = {}, produkAgg = {};
+
+      chunksSnap.forEach(chunkDoc => {
+        const data = chunkDoc.data();
+        Object.entries(data).forEach(([outletName, outletData]) => {
+          if (['months','nchunks','_saved'].includes(outletName)) return;
+          if (outletName.startsWith('_') || typeof outletData !== 'object' || Array.isArray(outletData)) return;
+          if (!outletAgg[outletName]) outletAgg[outletName] = {};
+          // Format: { produkName: { qty, val } }
+          Object.entries(outletData).forEach(([produk, pdata]) => {
+            if (typeof pdata !== 'object') return;
+            const qty = parseInt(pdata.qty) || 0;
+            const val = parseInt(pdata.val) || 0;
+            if (!outletAgg[outletName][produk]) outletAgg[outletName][produk] = { qty: 0, val: 0 };
+            outletAgg[outletName][produk].qty += qty;
+            outletAgg[outletName][produk].val += val;
+            if (!produkAgg[produk]) produkAgg[produk] = { qty: 0, val: 0 };
+            produkAgg[produk].qty += qty;
+            produkAgg[produk].val += val;
+          });
+        });
+      });
+
+      if (Object.keys(outletAgg).length > 0) {
+        window.salesData[label] = outletAgg;
+        window.produkData[label] = produkAgg;
         window.yearMeta[label] = { months, year };
       }
     }
 
-    window.allMonths = Object.keys(window.salesData).sort((a,b) => {
+    // Sort periods
+    window.allMonths = Object.keys(window.salesData).sort((a, b) => {
       const ya = window.yearMeta[a]?.year || 0;
       const yb = window.yearMeta[b]?.year || 0;
       return ya - yb;
@@ -918,41 +904,30 @@ async function loadData() {
 
     window.selectedMonth = window.allMonths[window.allMonths.length - 1];
     setStatus('Online', 'green');
-    console.log('Loaded periods:', window.allMonths);
-    console.log('Sample salesData keys:', Object.keys(window.salesData[window.allMonths[0]] || {}).slice(0,3));
-    console.log('Sample produkData keys:', Object.keys(window.produkData[window.allMonths[0]] || {}).slice(0,3));
-    
-    // Update AI welcome message
+
+    // Update AI chat welcome
     const totalOutlets = Object.keys(window.salesData[window.selectedMonth] || {}).length;
     const totalProduk = Object.keys(window.produkData[window.selectedMonth] || {}).length;
     const chatMsgs = document.getElementById('chatMessages');
     if (chatMsgs) {
       const firstBubble = chatMsgs.querySelector('.msg-bubble');
       if (firstBubble) {
-        firstBubble.innerHTML = `Halo! Saya <strong>AI Sales Assistant</strong> Lalo YTD.<br>
-        ✅ Data berhasil dimuat: <strong>${window.allMonths.join(', ')}</strong><br>
-        📊 ${totalOutlets} outlet, ${totalProduk} produk SKU tersedia.<br>
+        firstBubble.innerHTML = `✅ Data berhasil dimuat: <strong>${window.allMonths.join(' | ')}</strong><br>
+        📊 ${totalOutlets} outlet, ${totalProduk} produk SKU<br>
         Silakan tanyakan apa saja tentang data penjualan!`;
       }
     }
+
     renderAll();
 
   } catch (err) {
     console.error('loadData error:', err);
-    setStatus('Error: ' + err.message.slice(0,20), 'red');
+    setStatus('Error', 'red');
     document.getElementById('welcomeSub').textContent = `Error: ${err.message}`;
-    showToast('❌ Error: ' + err.message.slice(0,40));
-    // Update chat with error info
-    const chatMsgs = document.getElementById('chatMessages');
-    if (chatMsgs) {
-      const firstBubble = chatMsgs.querySelector('.msg-bubble');
-      if (firstBubble) {
-        firstBubble.innerHTML = `⚠️ Gagal load Firebase: <strong>${err.message}</strong><br>
-        Kamu tetap bisa bertanya, tapi data mungkin tidak akurat.`;
-      }
-    }
+    showToast('❌ Error: ' + err.message.slice(0, 40));
   }
 }
+
 
 // ============ RENDER ============
 function renderAll() {
