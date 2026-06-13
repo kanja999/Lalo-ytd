@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Debug MD</title>
+<style>
+body{font-family:monospace;background:#111;color:#0f0;padding:16px;font-size:12px;}
+.ok{color:#0f0;}.err{color:#f44;}.info{color:#ff0;}
+pre{background:#222;padding:8px;border-radius:4px;overflow-x:auto;white-space:pre-wrap;}
+button{background:#0f0;color:#000;border:none;padding:8px 16px;margin:4px;border-radius:4px;cursor:pointer;}
+</style>
+</head>
+<body>
+<h3>🔍 Debug window.MD</h3>
+<button onclick="runTest()">▶ Run Test</button>
+<div id="log"></div>
+
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+import { getFirestore, collection, getDocs } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+
+const app = initializeApp({
+  apiKey:"AIzaSyBwK90APc4xFmX7sOS8WoLyRDjIVThimqQ",
+  authDomain:"lalo-ytd.firebaseapp.com",
+  projectId:"lalo-ytd",
+  storageBucket:"lalo-ytd.firebasestorage.app",
+  messagingSenderId:"842696950491",
+  appId:"1:842696950491:web:fd500db5cc5d2ed85182fe"
+});
+const db = getFirestore(app);
+const BULAN = ['','Jan','Feb','Mar','Apr','Mei','Jun','Jul','Agu','Sep','Okt','Nov','Des'];
+
+function log(msg, type='ok') {
+  document.getElementById('log').innerHTML += `<div class="${type}">${msg}</div>`;
+}
+
+window.runTest = async function() {
+  document.getElementById('log').innerHTML = '';
+  log('=== LOAD & BUILD MD ===', 'info');
+
+  try {
+    // Load sales_data monthly
+    const sdSnap = await getDocs(collection(db, 'sales_data'));
+    const MD = {};
+
+    for (const periodDoc of sdSnap.docs) {
+      const meta = periodDoc.data();
+      const m26arr = (meta._months_26||[]).map(Number);
+      const lbl26 = m26arr.length ? 'YTD 2026 s/d '+(BULAN[m26arr[m26arr.length-1]]||'?') : null;
+
+      log(`\nPeriode: ${periodDoc.id}`, 'info');
+      log(`_months_26: ${JSON.stringify(m26arr)}`);
+      log(`Label: ${lbl26}`);
+
+      const monthlySnap = await getDocs(collection(db, 'sales_data', periodDoc.id, 'monthly'));
+      log(`Monthly docs: ${monthlySnap.size} → [${monthlySnap.docs.map(d=>d.id).join(', ')}]`);
+
+      if (!lbl26) { log('❌ No label26!', 'err'); continue; }
+      MD[lbl26] = {};
+
+      monthlySnap.docs.forEach(d => {
+        const match = d.id.match(/^m(\d+)_c\d+$/);
+        if (!match) { log(`Skip ${d.id} - no match`, 'err'); return; }
+        const mo = parseInt(match[1]);
+        const data = d.data();
+
+        Object.entries(data).forEach(([outlet, prods]) => {
+          if (outlet.startsWith('_') || typeof prods !== 'object' || Array.isArray(prods)) return;
+          if (!MD[lbl26][outlet]) MD[lbl26][outlet] = {};
+          Object.entries(prods).forEach(([produk, pv]) => {
+            if (typeof pv !== 'object') return;
+            if (!MD[lbl26][outlet][produk]) MD[lbl26][outlet][produk] = {};
+            MD[lbl26][outlet][produk][mo] = {qty: parseInt(pv.qty)||0, val: parseInt(pv.val)||0};
+          });
+        });
+      });
+
+      log(`MD[${lbl26}] outlets: ${Object.keys(MD[lbl26]).length}`);
+    }
+
+    // Test query: mimi, bulan 5
+    log('\n=== TEST QUERY: mimi + bulan 5 ===', 'info');
+    Object.entries(MD).forEach(([period, outlets]) => {
+      log(`\nPeriode: ${period}`, 'info');
+      // Find mimi
+      const mimiKeys = Object.keys(outlets).filter(k => k.toLowerCase().includes('mimi'));
+      log(`Mimi outlets: ${mimiKeys.join(', ') || 'TIDAK ADA'}`);
+
+      mimiKeys.forEach(outlet => {
+        log(`\n  ${outlet}:`, 'ok');
+        const prods = outlets[outlet];
+        Object.entries(prods).forEach(([produk, months]) => {
+          const m5 = months[5];
+          if (m5) log(`    ${produk} → Mei: qty=${m5.qty}, val=${m5.val}`);
+        });
+      });
+    });
+
+    log('\n=== buildCtx simulation ===', 'info');
+    const q = 'qty refaquin apt mimi mei 2026';
+    const qLow = q.toLowerCase();
+    
+    function tokenize(str) {
+      return str.toLowerCase().replace(/[^a-z0-9]/g,' ').split(/\s+/).filter(t=>t.length>1);
+    }
+    function isMatch(name, query) {
+      const qT = tokenize(query);
+      const nT = tokenize(name);
+      return qT.some(qw => nT.some(nw => nw.includes(qw) || qw.includes(nw)));
+    }
+
+    const BMAP = {jan:1,feb:2,mar:3,apr:4,mei:5,may:5};
+    let filterMonth = null;
+    Object.entries(BMAP).forEach(([k,v]) => { if (qLow.includes(k)) filterMonth = v; });
+    log(`filterMonth: ${filterMonth}`);
+
+    const yearMatch = qLow.match(/20(25|26)/);
+    const filterYear = yearMatch ? parseInt('20'+yearMatch[1]) : null;
+    log(`filterYear: ${filterYear}`);
+
+    Object.entries(MD).forEach(([period, outlets]) => {
+      log(`\nChecking period: ${period}`, 'info');
+      log(`Object.keys(MD[period]).length: ${Object.keys(outlets).length}`);
+
+      if (filterMonth && Object.keys(outlets).length > 0) {
+        log(`✅ Using monthly data for bulan ${filterMonth}`, 'ok');
+        Object.entries(outlets).forEach(([outlet, prods]) => {
+          if (!isMatch(outlet, qLow)) return;
+          log(`  ✅ Outlet match: ${outlet}`, 'ok');
+          Object.entries(prods).forEach(([produk, months]) => {
+            const m = months[filterMonth];
+            if (m) {
+              if (isMatch(produk, qLow)) log(`    ✅ PRODUK MATCH: ${produk} → qty=${m.qty}, val=${m.val}`, 'ok');
+              else log(`    - ${produk} (no match) → qty=${m.qty}`);
+            }
+          });
+        });
+      }
+    });
+
+  } catch(err) {
+    log(`ERROR: ${err.message}`, 'err');
+    console.error(err);
+  }
+}
+</script>
+</body>
+</html>
